@@ -59,7 +59,7 @@ class TinyMCE(forms.Textarea):
         self.content_language = content_language
         self.profile = profile or DEFAULT_PROFILE
 
-    def render(self, name, value, attrs=None):
+    def render(self, name, value, attrs=None, renderer=None):
         if value is None: value = ''
         value = smart_unicode(value)
         final_attrs = self.build_attrs(attrs)
