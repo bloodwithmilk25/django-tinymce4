@@ -1,143 +1,212 @@
-# Copyright (c) 2008 Joost Cassee
-# Licensed under the terms of the MIT License (see LICENSE.txt)
-
+# License: MIT, see LICENSE.txt
 """
+TinyMCE 4 forms widget
+
 This TinyMCE widget was copied and extended from this code by John D'Agostino:
 http://code.djangoproject.com/wiki/CustomWidgetsTinyMCE
 """
-
 import json
-from django import forms
+import logging
+import os
+
 from django.conf import settings
-from django.contrib.admin import widgets as admin_widgets
+from django.contrib.staticfiles import finders
+from django.core.serializers.json import DjangoJSONEncoder
+from django.forms import Textarea, Media
 from django.forms.utils import flatatt
-from django.urls import reverse
-
-try:
-    from django.utils.encoding import smart_text as smart_unicode
-except ImportError:
-    try:
-        from django.utils.encoding import smart_unicode
-    except ImportError:
-        from django.forms.util import smart_unicode
-from django.utils.html import escape
-try:
-    from django.utils.datastructures import SortedDict
-except ImportError:
-    from collections import OrderedDict as SortedDict
+from django.utils.encoding import smart_text
 from django.utils.safestring import mark_safe
-from django.utils.translation import get_language, ugettext as _
-import tinymce.settings
-from tinymce.profiles import DEFAULT as DEFAULT_PROFILE
+from django.utils.html import escape
+from django.utils.translation import get_language, get_language_bidi
+from django.template.loader import render_to_string
+from django.urls import reverse
+from django.contrib.admin import widgets as admin_widgets
+from jsmin import jsmin
+from . import settings as mce_settings
+
+__all__ = ['TinyMCE', 'render_tinymce_init_js']
+
+logging.basicConfig(format='[%(asctime)s] %(module)s: %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+logger_level = logging.DEBUG if settings.DEBUG else logging.WARNING
+logger.setLevel(logger_level)
 
 
-class TinyMCE(forms.Textarea):
+def language_file_exists(language_code):
     """
-    TinyMCE widget. Set settings.TINYMCE_JS_URL to set the location of the
-    javascript file. Default is "MEDIA_URL + 'js/tiny_mce/tiny_mce.js'".
-    You can customize the configuration with the mce_attrs argument to the
-    constructor.
+    Check if TinyMCE has a language file for the specified lang code
 
-    In addition to the standard configuration you can set the
-    'content_language' parameter. It takes the value of the 'language'
-    parameter by default.
-
-    In addition to the default settings from settings.TINYMCE_DEFAULT_CONFIG,
-    this widget sets the 'language', 'directionality' and
-    'spellchecker_languages' parameters by default. The first is derived from
-    the current Django language, the others from the 'content_language'
-    parameter.
+    :param language_code: language code
+    :type language_code: str
+    :return: check result
+    :rtype: bool
     """
-
-    def __init__(self, content_language=None, attrs=None, mce_attrs=None, profile=None):
-        super(TinyMCE, self).__init__(attrs)
-        if mce_attrs is None:
-            mce_attrs = {}
-        self.mce_attrs = mce_attrs
-        if content_language is None:
-            content_language = mce_attrs.get('language', None)
-        self.content_language = content_language
-        self.profile = profile or DEFAULT_PROFILE
-
-    def render(self, name, value, attrs=None, renderer=None):
-        if value is None: value = ''
-        value = smart_unicode(value)
-        final_attrs = self.build_attrs(attrs)
-        final_attrs['name'] = name
-        assert 'id' in final_attrs, "TinyMCE widget attributes must contain 'id'"
-
-        mce_config = self.profile.copy()
-        #mce_config.update(get_language_config(self.content_language))
-        #if tinymce.settings.USE_FILEBROWSER:
-            #mce_config['file_browser_callback'] = "djangoFileBrowser"
-        mce_config.update(self.mce_attrs)
-        mce_config['selector'] = '#%s' % final_attrs['id']
-
-        # Fix for js functions
-        #js_functions = {}
-        #for k in ('paste_preprocess','paste_postprocess'):
-            #if k in mce_config:
-               #js_functions[k] = mce_config[k]
-               #del mce_config[k]
-        mce_json = json.dumps(mce_config)
-
-        #for k in js_functions:
-            #index = mce_json.rfind('}')
-            #mce_json = mce_json[:index]+', '+k+':'+js_functions[k].strip()+mce_json[index:]
-
-        if mce_config.get('inline', False):
-            html = [u'<div%s>%s</div>' % (flatatt(final_attrs), escape(value))]
-        else:
-            html = [u'<textarea%s>%s</textarea>' % (flatatt(final_attrs), escape(value))]
-        html.append(u'<script type="text/javascript">tinyMCE.init(%s)</script>' % mce_json)
-
-        return mark_safe(u'\n'.join(html))
-
-    def _media(self):
-        if tinymce.settings.USE_COMPRESSOR:
-            js = [reverse('tinymce-compressor')]
-        else:
-            js = [tinymce.settings.JS_URL]
-        if tinymce.settings.USE_FILEBROWSER:
-            js.append(reverse('tinymce-filebrowser'))
-        return forms.Media(js=js)
-    media = property(_media)
+    filename = '{0}.js'.format(language_code)
+    path = os.path.join('tinymce', 'js', 'tinymce', 'langs', filename)
+    return finders.find(path) is not None
 
 
-class AdminTinyMCE(admin_widgets.AdminTextareaWidget, TinyMCE):
-    pass
+def get_language_config():
+    """
+    Creates a language configuration for TinyMCE4 based on Django project settings
 
-
-def get_language_config(content_language=None):
-    language = get_language()[:2]
-    if content_language:
-        content_language = content_language[:2]
-    else:
-        content_language = language
-
-    config = {}
-    config['language'] = language
-
-    lang_names = SortedDict()
-    for lang, name in settings.LANGUAGES:
-        if lang[:2] not in lang_names: lang_names[lang[:2]] = []
-        lang_names[lang[:2]].append(_(name))
-    sp_langs = []
-    for lang, names in lang_names.items():
-        if lang == content_language:
-            default = '+'
-        else:
-            default = ''
-        sp_langs.append(u'%s%s=%s' % (default, ' / '.join(names), lang))
-
-    config['spellchecker_languages'] = ','.join(sp_langs)
-
-    if content_language in settings.LANGUAGES_BIDI:
+    :return: language- and locale-related parameters for TinyMCE 4
+    :rtype: dict
+    """
+    language_code = convert_language_code(get_language() or settings.LANGUAGE_CODE)
+    if not language_file_exists(language_code):
+        language_code = language_code[:2]
+        if not language_file_exists(language_code):
+            # Fall back to English if Tiny MCE 4 does not have required translation
+            language_code = 'en'
+    config = {'language': language_code}
+    if get_language_bidi():
         config['directionality'] = 'rtl'
     else:
         config['directionality'] = 'ltr'
-
-    if tinymce.settings.USE_SPELLCHECKER:
-        config['spellchecker_rpc_url'] = reverse('tinymce.views.spell_check')
-
     return config
+
+
+def get_spellcheck_config():
+    """
+    Create TinyMCE spellchecker config based on Django settings
+
+    :return: spellchecker parameters for TinyMCE
+    :rtype: dict
+    """
+    config = {}
+    if mce_settings.USE_SPELLCHECKER:
+        from enchant import list_languages
+        enchant_languages = list_languages()
+        logger.debug('Enchant languages: {0}'.format(enchant_languages))
+        lang_names = []
+        for lang, name in settings.LANGUAGES:
+            lang = convert_language_code(lang)
+            if lang not in enchant_languages:
+                lang = lang[:2]
+            if lang not in enchant_languages:
+                logger.warning('Missing {0} spellchecker dictionary!'.format(lang))
+                continue
+            if config.get('spellchecker_language') is None:
+                config['spellchecker_language'] = lang
+            lang_names.append('{0}={1}'.format(name, lang))
+        config['spellchecker_languages'] = ','.join(lang_names)
+    return config
+
+
+def convert_language_code(django_lang):
+    """
+    Converts Django language codes "ll-cc" into ISO codes "ll_CC" or "ll"
+
+    :param django_lang: Django language code as ll-cc
+    :type django_lang: str
+    :return: ISO language code as ll_CC
+    :rtype: str
+    """
+    lang_and_country = django_lang.split('-')
+    try:
+        return '_'.join((lang_and_country[0], lang_and_country[1].upper()))
+    except IndexError:
+        return lang_and_country[0]
+
+
+def render_tinymce_init_js(mce_config, callbacks, id_):
+    """
+    Renders TinyMCE.init() JavaScript code
+
+    :param mce_config: TinyMCE 4 configuration
+    :type mce_config: dict
+    :param callbacks: TinyMCE callbacks
+    :type callbacks: dict
+    :param id_: HTML element's ID to which TinyMCE is attached.
+    :type id_: str
+    :return: TinyMCE.init() code
+    :rtype: str
+    """
+    if mce_settings.USE_FILEBROWSER and 'file_browser_callback' not in callbacks:
+        callbacks['file_browser_callback'] = 'djangoFileBrowser'
+    if mce_settings.USE_SPELLCHECKER and 'spellchecker_callback' not in callbacks:
+        callbacks['spellchecker_callback'] = 'tinymce4_spellcheck'
+
+    if id_:
+        mce_config['selector'] = mce_config.get('selector', 'textarea') + '#{0}'.format(id_)
+
+    config = json.dumps(mce_config, cls=DjangoJSONEncoder)[1:-1]
+
+    return render_to_string('tinymce/tinymce_init.js',
+                            context={'callbacks': callbacks,
+                                     'tinymce_config': config,
+                                     'is_admin_inline': '__prefix__' in id_})
+
+
+class TinyMCE(Textarea):
+    """
+    TinyMCE 4 widget
+
+    It replaces a textarea form widget with a rich-text WYSIWYG `TinyMCE 4`_ editor widget.
+
+    :param attrs: General Django widget attributes.
+    :type attrs: dict
+    :param mce_attrs: Additional configuration parameters for TinyMCE 4.
+        They *amend* the existing configuration.
+    :type mce_attrs: dict
+    :param profile: TinyMCE 4 configuration parameters.
+        They *replace* the existing configuration.
+    :type profile: dict
+
+    .. _TinyMCE 4: https://www.tinymce.com/
+    """
+    def __init__(self, attrs=None, mce_attrs=None, profile=None):
+        super(TinyMCE, self).__init__(attrs)
+        self.mce_attrs = mce_attrs or {}
+        self.profile = get_spellcheck_config()
+        default_profile = profile or mce_settings.CONFIG.copy()
+        self.profile.update(default_profile)
+
+    def build_attrs(self, base_attrs, extra_attrs=None, **kwargs):
+        attributes = dict(base_attrs, **kwargs)
+        if extra_attrs:
+            attributes.update(extra_attrs)
+        return attributes
+
+    def render(self, name, value, attrs=None, renderer=None):
+        if value is None:
+            value = ''
+        value = smart_text(value)
+        final_attrs = self.build_attrs(self.attrs, attrs)
+        final_attrs['name'] = name
+        final_attrs['class'] = (final_attrs.get('class', '') + ' tinymce4-editor').lstrip()
+        mce_config = self.profile.copy()
+        mce_config.update(self.mce_attrs)
+        if 'language' not in mce_config:
+            mce_config.update(get_language_config())
+        if mce_config.get('inline'):
+            html = '<div{0}>{1}</div>\n'.format(flatatt(final_attrs), escape(value))
+        else:
+            html = '<textarea{0}>{1}</textarea>\n'.format(flatatt(final_attrs), escape(value))
+        html += '<script type="text/javascript">{0}</script>'.format(
+            jsmin(render_tinymce_init_js(mce_config,
+                                         mce_settings.CALLBACKS.copy(),
+                                         final_attrs['id'])
+                  )
+        )
+        return mark_safe(html)
+
+    @property
+    def media(self):
+        js = [mce_settings.JS_URL]
+        if mce_settings.USE_FILEBROWSER:
+            js.append(reverse('tinymce-filebrowser'))
+        if mce_settings.ADDIONAL_JS_URLS:
+            js += mce_settings.ADDIONAL_JS_URLS
+        if mce_settings.USE_SPELLCHECKER:
+            js.append(reverse('tinymce-spellcheck-callback'))
+        css = {'all': [reverse('tinymce-css')]}
+        if mce_settings.CSS_URL:
+            css['all'].append(mce_settings.CSS_URL)
+        return Media(js=js, css=css)
+
+
+class AdminTinyMCE(TinyMCE, admin_widgets.AdminTextareaWidget):
+    """TinyMCE 4 widget for Django Admin interface"""
+    pass
